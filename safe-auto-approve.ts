@@ -11,8 +11,7 @@
  *   "confidenceThreshold": 0.8,
  *   "timeoutMs": 1500,
  *   "customInstructions": "Auto-approve local Docker commands, but ask before deleting volumes.",
- *   "showDecisionToasts": true,
- *   "showDecisionInline": true
+ *   "showDecisionToasts": true
  * }
  */
 
@@ -39,7 +38,6 @@ interface PluginConfig {
   cacheDecisions: boolean
   customInstructions: string
   showDecisionToasts: boolean
-  showDecisionInline: boolean
 }
 
 const DEFAULT_CONFIG: PluginConfig = {
@@ -51,7 +49,6 @@ const DEFAULT_CONFIG: PluginConfig = {
   cacheDecisions: true,
   customInstructions: "",
   showDecisionToasts: true,
-  showDecisionInline: true,
 }
 
 async function loadConfig(): Promise<PluginConfig> {
@@ -84,7 +81,6 @@ async function loadConfig(): Promise<PluginConfig> {
     cacheDecisions: b(fileConfig.cacheDecisions, DEFAULT_CONFIG.cacheDecisions),
     customInstructions: s(fileConfig.customInstructions, DEFAULT_CONFIG.customInstructions),
     showDecisionToasts: b(fileConfig.showDecisionToasts, DEFAULT_CONFIG.showDecisionToasts),
-    showDecisionInline: b(fileConfig.showDecisionInline, DEFAULT_CONFIG.showDecisionInline),
   }
 }
 
@@ -326,32 +322,6 @@ async function classifyWithModel(
 }
 
 // ============================================================================
-// Per-Session Decision Queue (for chat.message injection)
-// ============================================================================
-
-interface QueuedDecision {
-  decision: Decision
-  command: string
-  _ts: number
-}
-
-const decisionQueue = new Map<string, QueuedDecision[]>()
-const MAX_QUEUE_AGE_MS = 60_000
-
-function cleanupStaleQueue(): void {
-  if (decisionQueue.size === 0) return
-  const now = Date.now()
-  for (const [sessionID, entries] of decisionQueue) {
-    const filtered = entries.filter(e => now - e._ts <= MAX_QUEUE_AGE_MS)
-    if (filtered.length === 0) {
-      decisionQueue.delete(sessionID)
-    } else {
-      decisionQueue.set(sessionID, filtered)
-    }
-  }
-}
-
-// ============================================================================
 // Lazy Session Creation
 // ============================================================================
 
@@ -586,7 +556,6 @@ export const SafeAutoApprovePlugin: Plugin = async ({ client, serverUrl, directo
         sessionID: string
         permission: string
         patterns: string[]
-        tool?: { messageID: string; callID: string }
       }
 
       // Only handle bash/shell permissions
@@ -610,14 +579,6 @@ export const SafeAutoApprovePlugin: Plugin = async ({ client, serverUrl, directo
 
       const decision = await decide(command, client, config, getSession)
 
-      // Queue decision for chat.message injection on the next user message
-      if (config.showDecisionInline) {
-        cleanupStaleQueue()
-        const queue = decisionQueue.get(props.sessionID) || []
-        queue.push({ decision, command, _ts: Date.now() })
-        decisionQueue.set(props.sessionID, queue)
-      }
-
       if (config.logDecisions) {
         await logDecision(client, props.permission, command, decision)
       }
@@ -630,36 +591,6 @@ export const SafeAutoApprovePlugin: Plugin = async ({ client, serverUrl, directo
         await replyOnceV2(v2Client, props.id)
         await replyOnce(client, props.sessionID, props.id)
       }
-    },
-
-    "chat.message": async (input, output) => {
-      if (!config.showDecisionInline) return
-
-      // Check if there are pending decisions for this session
-      const queue = decisionQueue.get(input.sessionID)
-      if (!queue || queue.length === 0) return
-
-      // Inject decisions at the start of the user's next message
-      for (const entry of queue) {
-        const { decision } = entry
-        const approved = decision.kind === "AUTO_APPROVE"
-        const confidence = decision.confidence != null
-          ? ` (confidence: ${Math.round(decision.confidence * 100)}%)`
-          : ""
-
-        const annotation = [
-          `[Safe Auto-Approve: ${approved ? "approved" : "asking"}]`,
-          `"${redactCommand(entry.command)}"`,
-          `source: ${decision.source}${confidence}`,
-          `reason: ${decision.reason}`,
-        ].join(" — ")
-
-        // Prepend so annotations stack in chronological order
-        output.parts.unshift({ type: "text", text: annotation } as any)
-      }
-
-      // Clear the queue for this session
-      decisionQueue.delete(input.sessionID)
     },
   }
 }
