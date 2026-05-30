@@ -5,9 +5,7 @@ An OpenCode plugin that hooks into `permission.asked` bus events to automaticall
 ## Installation
 
 ```bash
-git clone https://github.com/cbruegg/opencode-safe-auto-approve.git ~/.config/opencode/plugins/safe-auto-approve
-cd ~/.config/opencode/plugins/safe-auto-approve
-npm install
+git clone https://github.com/cbruegg/opencode-safe-auto-approve.git ~/.config/opencode/plugins/opencode-safe-auto-approve
 ```
 
 Then register the plugin in your OpenCode config (e.g. `~/.config/opencode/opencode.json`).
