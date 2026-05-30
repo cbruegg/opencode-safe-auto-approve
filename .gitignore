@@ -1,0 +1,5 @@
+node_modules/
+.DS_Store
+
+# User-specific runtime config (do not track)
+safe-auto-approve.json
