@@ -329,15 +329,20 @@ async function classifyWithModel(
 // Pending Decision Tracker (for tool.execute.after correlation)
 // ============================================================================
 
-const pendingDecisions = new Map<string, Decision>()
+interface PendingEntry {
+  decision: Decision
+  sessionID: string
+  _ts: number
+}
+
+const pendingDecisions = new Map<string, PendingEntry>()
 const MAX_PENDING_AGE_MS = 60_000 // 1 minute TTL to prevent memory leaks
 
 function cleanupStalePending(): void {
   if (pendingDecisions.size === 0) return
   const now = Date.now()
   for (const [key, entry] of pendingDecisions) {
-    const timedEntry = entry as Decision & { _ts?: number }
-    if (timedEntry._ts && now - timedEntry._ts > MAX_PENDING_AGE_MS) {
+    if (now - entry._ts > MAX_PENDING_AGE_MS) {
       pendingDecisions.delete(key)
     }
   }
@@ -605,7 +610,7 @@ export const SafeAutoApprovePlugin: Plugin = async ({ client, serverUrl, directo
       // Correlate decision with the upcoming tool execution for inline chat annotation
       if (props.tool?.callID) {
         cleanupStalePending()
-        pendingDecisions.set(props.tool.callID, { ...decision, _ts: Date.now() } as Decision)
+        pendingDecisions.set(props.tool.callID, { decision, sessionID: props.sessionID, _ts: Date.now() })
       }
 
       if (config.logDecisions) {
@@ -629,28 +634,36 @@ export const SafeAutoApprovePlugin: Plugin = async ({ client, serverUrl, directo
       if (input.tool !== "bash" && input.tool !== "shell") return
 
       // Check if we have a pending decision for this tool call
-      const decision = pendingDecisions.get(input.callID)
-      if (!decision) return
+      const entry = pendingDecisions.get(input.callID)
+      if (!entry) return
 
       pendingDecisions.delete(input.callID)
+      const { decision, sessionID } = entry
 
-      // Format decision badge for inline display
+      // Format decision message
       const approved = decision.kind === "AUTO_APPROVE"
-      const badge = approved
-        ? "[Safe Auto-Approve: approved]"
-        : "[Safe Auto-Approve: asking]"
+      const confidence = decision.confidence != null
+        ? ` (confidence: ${Math.round(decision.confidence * 100)}%)`
+        : ""
+      const header = approved
+        ? "Safe Auto-Approve: approved"
+        : "Safe Auto-Approve: asking"
 
-      // Annotate the tool title (visible header in chat)
-      const detail = decision.confidence != null
-        ? ` (${decision.source} ${Math.round(decision.confidence * 100)}%)`
-        : ` (${decision.source})`
-      output.title = `${badge} ${output.title} —${detail}: ${decision.reason}`
+      const message = `${header}\n` +
+        `Command: ${redactCommand(input.args?.command ?? input.args?.[0] ?? "unknown")}\n` +
+        `Source: ${decision.source}${confidence}\n` +
+        `Reason: ${decision.reason}`
 
-      // Also prepend a note to the output
-      const prefix = approved
-        ? `>>> Safe Auto-Approve: this command was auto-approved (source: ${decision.source}, reason: ${decision.reason})\n\n`
-        : `>>> Safe Auto-Approve: user confirmation was requested (source: ${decision.source}, reason: ${decision.reason})\n\n`
-      output.output = prefix + output.output
+      // Inject a visible chat message after the tool result (noReply prevents LLM trigger)
+      try {
+        await v2Client.session.prompt({
+          sessionID,
+          parts: [{ type: "text", text: message }],
+          noReply: true,
+        })
+      } catch {
+        // Silently ignore — UI feedback is best-effort
+      }
     },
   }
 }
