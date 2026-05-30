@@ -6,5 +6,6 @@
   "logDecisions": true,
   "cacheDecisions": true,
   "customInstructions": "",
-  "showDecisionToasts": true
+  "showDecisionToasts": true,
+  "showDecisionInline": true
 }

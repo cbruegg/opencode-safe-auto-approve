@@ -11,7 +11,8 @@
  *   "confidenceThreshold": 0.8,
  *   "timeoutMs": 1500,
  *   "customInstructions": "Auto-approve local Docker commands, but ask before deleting volumes.",
- *   "showDecisionToasts": true
+ *   "showDecisionToasts": true,
+ *   "showDecisionInline": true
  * }
  */
 
@@ -38,6 +39,7 @@ interface PluginConfig {
   cacheDecisions: boolean
   customInstructions: string
   showDecisionToasts: boolean
+  showDecisionInline: boolean
 }
 
 const DEFAULT_CONFIG: PluginConfig = {
@@ -49,6 +51,7 @@ const DEFAULT_CONFIG: PluginConfig = {
   cacheDecisions: true,
   customInstructions: "",
   showDecisionToasts: true,
+  showDecisionInline: true,
 }
 
 async function loadConfig(): Promise<PluginConfig> {
@@ -81,6 +84,7 @@ async function loadConfig(): Promise<PluginConfig> {
     cacheDecisions: b(fileConfig.cacheDecisions, DEFAULT_CONFIG.cacheDecisions),
     customInstructions: s(fileConfig.customInstructions, DEFAULT_CONFIG.customInstructions),
     showDecisionToasts: b(fileConfig.showDecisionToasts, DEFAULT_CONFIG.showDecisionToasts),
+    showDecisionInline: b(fileConfig.showDecisionInline, DEFAULT_CONFIG.showDecisionInline),
   }
 }
 
@@ -322,6 +326,24 @@ async function classifyWithModel(
 }
 
 // ============================================================================
+// Pending Decision Tracker (for tool.execute.after correlation)
+// ============================================================================
+
+const pendingDecisions = new Map<string, Decision>()
+const MAX_PENDING_AGE_MS = 60_000 // 1 minute TTL to prevent memory leaks
+
+function cleanupStalePending(): void {
+  if (pendingDecisions.size === 0) return
+  const now = Date.now()
+  for (const [key, entry] of pendingDecisions) {
+    const timedEntry = entry as Decision & { _ts?: number }
+    if (timedEntry._ts && now - timedEntry._ts > MAX_PENDING_AGE_MS) {
+      pendingDecisions.delete(key)
+    }
+  }
+}
+
+// ============================================================================
 // Lazy Session Creation
 // ============================================================================
 
@@ -556,6 +578,7 @@ export const SafeAutoApprovePlugin: Plugin = async ({ client, serverUrl, directo
         sessionID: string
         permission: string
         patterns: string[]
+        tool?: { messageID: string; callID: string }
       }
 
       // Only handle bash/shell permissions
@@ -579,6 +602,12 @@ export const SafeAutoApprovePlugin: Plugin = async ({ client, serverUrl, directo
 
       const decision = await decide(command, client, config, getSession)
 
+      // Correlate decision with the upcoming tool execution for inline chat annotation
+      if (props.tool?.callID) {
+        cleanupStalePending()
+        pendingDecisions.set(props.tool.callID, { ...decision, _ts: Date.now() } as Decision)
+      }
+
       if (config.logDecisions) {
         await logDecision(client, props.permission, command, decision)
       }
@@ -591,6 +620,37 @@ export const SafeAutoApprovePlugin: Plugin = async ({ client, serverUrl, directo
         await replyOnceV2(v2Client, props.id)
         await replyOnce(client, props.sessionID, props.id)
       }
+    },
+
+    "tool.execute.after": async (input, output) => {
+      if (!config.showDecisionInline) return
+
+      // Only annotate bash/shell tool results
+      if (input.tool !== "bash" && input.tool !== "shell") return
+
+      // Check if we have a pending decision for this tool call
+      const decision = pendingDecisions.get(input.callID)
+      if (!decision) return
+
+      pendingDecisions.delete(input.callID)
+
+      // Format decision badge for inline display
+      const approved = decision.kind === "AUTO_APPROVE"
+      const badge = approved
+        ? "[Safe Auto-Approve: approved]"
+        : "[Safe Auto-Approve: asking]"
+
+      // Annotate the tool title (visible header in chat)
+      const detail = decision.confidence != null
+        ? ` (${decision.source} ${Math.round(decision.confidence * 100)}%)`
+        : ` (${decision.source})`
+      output.title = `${badge} ${output.title} —${detail}: ${decision.reason}`
+
+      // Also prepend a note to the output
+      const prefix = approved
+        ? `>>> Safe Auto-Approve: this command was auto-approved (source: ${decision.source}, reason: ${decision.reason})\n\n`
+        : `>>> Safe Auto-Approve: user confirmation was requested (source: ${decision.source}, reason: ${decision.reason})\n\n`
+      output.output = prefix + output.output
     },
   }
 }

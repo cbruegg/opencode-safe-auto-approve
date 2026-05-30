@@ -28,6 +28,7 @@ cp safe-auto-approve.example.json ~/.config/opencode/plugins/safe-auto-approve.j
 | `cacheDecisions` | boolean | `true` | Cache deterministic and high-confidence decisions |
 | `customInstructions` | string | `""` | Extra instructions appended to the classifier prompt to relax or tighten behavior |
 | `showDecisionToasts` | boolean | `true` | Show a TUI toast notification for every decision (approved or asking) |
+| `showDecisionInline` | boolean | `true` | Annotate bash/shell tool results in chat with the decision badge and reason |
 
 ## How It Works
 
