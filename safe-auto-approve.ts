@@ -10,7 +10,8 @@
  *   "model": "anthropic/claude-haiku-4-5",
  *   "confidenceThreshold": 0.8,
  *   "timeoutMs": 1500,
- *   "customInstructions": "Auto-approve local Docker commands, but ask before deleting volumes."
+ *   "customInstructions": "Auto-approve local Docker commands, but ask before deleting volumes.",
+ *   "showDecisionToasts": true
  * }
  */
 
@@ -36,6 +37,7 @@ interface PluginConfig {
   logDecisions: boolean
   cacheDecisions: boolean
   customInstructions: string
+  showDecisionToasts: boolean
 }
 
 const DEFAULT_CONFIG: PluginConfig = {
@@ -46,6 +48,7 @@ const DEFAULT_CONFIG: PluginConfig = {
   logDecisions: true,
   cacheDecisions: true,
   customInstructions: "",
+  showDecisionToasts: true,
 }
 
 async function loadConfig(): Promise<PluginConfig> {
@@ -77,6 +80,7 @@ async function loadConfig(): Promise<PluginConfig> {
     logDecisions: b(fileConfig.logDecisions, DEFAULT_CONFIG.logDecisions),
     cacheDecisions: b(fileConfig.cacheDecisions, DEFAULT_CONFIG.cacheDecisions),
     customInstructions: s(fileConfig.customInstructions, DEFAULT_CONFIG.customInstructions),
+    showDecisionToasts: b(fileConfig.showDecisionToasts, DEFAULT_CONFIG.showDecisionToasts),
   }
 }
 
@@ -399,6 +403,37 @@ async function logDecision(
   }
 }
 
+function truncateText(value: string, maxLength: number): string {
+  if (value.length <= maxLength) return value
+  return `${value.slice(0, Math.max(0, maxLength - 1))}…`
+}
+
+async function showDecisionToast(
+  client: any,
+  command: string,
+  decision: Decision,
+): Promise<void> {
+  try {
+    if (typeof client.tui?.showToast !== "function") return
+
+    const autoApproved = decision.kind === "AUTO_APPROVE"
+    const confidence = typeof decision.confidence === "number" ? ` (${Math.round(decision.confidence * 100)}%)` : ""
+    const commandText = truncateText(redactCommand(command), 80)
+    const reasonText = truncateText(decision.reason, 140)
+
+    await client.tui.showToast({
+      body: {
+        title: autoApproved ? "Safe Auto-Approve: approved" : "Safe Auto-Approve: asking",
+        message: `${commandText}\n${decision.source}${confidence}: ${reasonText}`,
+        variant: autoApproved ? "success" : "warning",
+        duration: autoApproved ? 6000 : 10000,
+      },
+    })
+  } catch {
+    // UI feedback should never affect permission handling
+  }
+}
+
 // ============================================================================
 // Decision Pipeline
 // ============================================================================
@@ -546,6 +581,10 @@ export const SafeAutoApprovePlugin: Plugin = async ({ client, serverUrl, directo
 
       if (config.logDecisions) {
         await logDecision(client, props.permission, command, decision)
+      }
+
+      if (config.showDecisionToasts) {
+        await showDecisionToast(client, command, decision)
       }
 
       if (decision.kind === "AUTO_APPROVE") {

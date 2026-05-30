@@ -26,7 +26,8 @@ cp safe-auto-approve.example.json ~/.config/opencode/plugins/safe-auto-approve.j
 | `maxCommandLength` | number | `2000` | Commands longer than this are always sent to user |
 | `logDecisions` | boolean | `true` | Log every decision to OpenCode logs |
 | `cacheDecisions` | boolean | `true` | Cache deterministic and high-confidence decisions |
-| `customInstructions` | string | `""` | Extra instructions appended to the classifier prompt |
+| `customInstructions` | string | `""` | Extra instructions appended to the classifier prompt to relax or tighten behavior |
+| `showDecisionToasts` | boolean | `true` | Show a TUI toast notification for every decision (approved or asking) |
 
 ## How It Works
 
