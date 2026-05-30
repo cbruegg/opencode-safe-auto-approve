@@ -91,8 +91,8 @@ async function loadConfig(): Promise<PluginConfig> {
 const decisionCache = new Map<string, Decision>()
 const MAX_CACHE_SIZE = 500
 
-function cacheKey(permission: string, command: string): string {
-  return `${permission}::${command.trim().replace(/\s+/g, " ")}`
+function cacheKey(permission: string, command: string, directory: string): string {
+  return `${permission}::${directory}::${command.trim().replace(/\s+/g, " ")}`
 }
 
 function getCached(key: string): Decision | undefined {
@@ -208,9 +208,11 @@ function matchAskRule(command: string): Decision | null {
 
 const CLASSIFIER_PROMPT = `You classify OpenCode permission requests for auto-approval.
 
+You will be given the current working directory and the command to classify. Use the working directory as context to judge whether the command's effects are local, bounded, and recoverable.
+
 Return AUTO_APPROVE for ordinary developer commands that read, write, move, delete, build, test, install, run local tools, use shell operators, or mutate local Git state, as long as their effects are local, bounded, and recoverable.
 
-Return ASK_USER for commands that use elevated privileges, affect broad system paths, publish/deploy, push to remotes, execute downloaded code, access credentials, upload data, modify remote systems, or have unclear high-impact effects.
+Return ASK_USER for commands that use elevated privileges, affect broad system paths outside the working directory, publish/deploy, push to remotes, execute downloaded code, access credentials, upload data, modify remote systems, or have unclear high-impact effects.
 
 When uncertain about a high-impact command, return ASK_USER. When uncertain about a normal local command, prefer AUTO_APPROVE.
 
@@ -252,6 +254,7 @@ async function classifyWithModel(
   client: any,
   sessionId: string,
   command: string,
+  directory: string,
   config: PluginConfig,
 ): Promise<Decision> {
   const modelId = parseModelId(config.model)
@@ -266,7 +269,7 @@ async function classifyWithModel(
       model: modelId,
       system: buildClassifierPrompt(config),
       parts: [
-        { type: "text", text: `Command:\n${command}` },
+        { type: "text", text: `Working directory: ${directory}\nCommand:\n${command}` },
       ],
     },
   })
@@ -444,6 +447,7 @@ function normalizeCommand(command: string): string {
 
 async function decide(
   command: string,
+  directory: string,
   client: any,
   config: PluginConfig,
   getSession: () => Promise<string | null>,
@@ -454,7 +458,7 @@ async function decide(
     return { kind: "ASK_USER", source: "rule", reason: "Command exceeds maximum length" }
   }
 
-  const key = cacheKey("bash", normalized)
+  const key = cacheKey("bash", normalized, directory)
   const cached = getCached(key)
   if (cached) return { ...cached, reason: `${cached.reason} (cached)` }
 
@@ -471,7 +475,7 @@ async function decide(
     return { kind: "ASK_USER", source: "error", reason: "Classifier session not available" }
   }
 
-  const modelDecision = await classifyWithModel(client, sessionId, normalized, config)
+  const modelDecision = await classifyWithModel(client, sessionId, normalized, directory, config)
 
   if (config.cacheDecisions && shouldCache(modelDecision)) setCached(key, modelDecision)
   return modelDecision
@@ -577,7 +581,7 @@ export const SafeAutoApprovePlugin: Plugin = async ({ client, serverUrl, directo
         // Ignore logging errors
       }
 
-      const decision = await decide(command, client, config, getSession)
+      const decision = await decide(command, String(directory), client, config, getSession)
 
       if (config.logDecisions) {
         await logDecision(client, props.permission, command, decision)
