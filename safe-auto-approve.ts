@@ -326,24 +326,27 @@ async function classifyWithModel(
 }
 
 // ============================================================================
-// Pending Decision Tracker (for tool.execute.after correlation)
+// Per-Session Decision Queue (for chat.message injection)
 // ============================================================================
 
-interface PendingEntry {
+interface QueuedDecision {
   decision: Decision
-  sessionID: string
+  command: string
   _ts: number
 }
 
-const pendingDecisions = new Map<string, PendingEntry>()
-const MAX_PENDING_AGE_MS = 60_000 // 1 minute TTL to prevent memory leaks
+const decisionQueue = new Map<string, QueuedDecision[]>()
+const MAX_QUEUE_AGE_MS = 60_000
 
-function cleanupStalePending(): void {
-  if (pendingDecisions.size === 0) return
+function cleanupStaleQueue(): void {
+  if (decisionQueue.size === 0) return
   const now = Date.now()
-  for (const [key, entry] of pendingDecisions) {
-    if (now - entry._ts > MAX_PENDING_AGE_MS) {
-      pendingDecisions.delete(key)
+  for (const [sessionID, entries] of decisionQueue) {
+    const filtered = entries.filter(e => now - e._ts <= MAX_QUEUE_AGE_MS)
+    if (filtered.length === 0) {
+      decisionQueue.delete(sessionID)
+    } else {
+      decisionQueue.set(sessionID, filtered)
     }
   }
 }
@@ -607,10 +610,12 @@ export const SafeAutoApprovePlugin: Plugin = async ({ client, serverUrl, directo
 
       const decision = await decide(command, client, config, getSession)
 
-      // Correlate decision with the upcoming tool execution for inline chat annotation
-      if (props.tool?.callID) {
-        cleanupStalePending()
-        pendingDecisions.set(props.tool.callID, { decision, sessionID: props.sessionID, _ts: Date.now() })
+      // Queue decision for chat.message injection on the next user message
+      if (config.showDecisionInline) {
+        cleanupStaleQueue()
+        const queue = decisionQueue.get(props.sessionID) || []
+        queue.push({ decision, command, _ts: Date.now() })
+        decisionQueue.set(props.sessionID, queue)
       }
 
       if (config.logDecisions) {
@@ -627,43 +632,34 @@ export const SafeAutoApprovePlugin: Plugin = async ({ client, serverUrl, directo
       }
     },
 
-    "tool.execute.after": async (input, output) => {
+    "chat.message": async (input, output) => {
       if (!config.showDecisionInline) return
 
-      // Only annotate bash/shell tool results
-      if (input.tool !== "bash" && input.tool !== "shell") return
+      // Check if there are pending decisions for this session
+      const queue = decisionQueue.get(input.sessionID)
+      if (!queue || queue.length === 0) return
 
-      // Check if we have a pending decision for this tool call
-      const entry = pendingDecisions.get(input.callID)
-      if (!entry) return
+      // Inject decisions at the start of the user's next message
+      for (const entry of queue) {
+        const { decision } = entry
+        const approved = decision.kind === "AUTO_APPROVE"
+        const confidence = decision.confidence != null
+          ? ` (confidence: ${Math.round(decision.confidence * 100)}%)`
+          : ""
 
-      pendingDecisions.delete(input.callID)
-      const { decision, sessionID } = entry
+        const annotation = [
+          `[Safe Auto-Approve: ${approved ? "approved" : "asking"}]`,
+          `"${redactCommand(entry.command)}"`,
+          `source: ${decision.source}${confidence}`,
+          `reason: ${decision.reason}`,
+        ].join(" — ")
 
-      // Format decision message
-      const approved = decision.kind === "AUTO_APPROVE"
-      const confidence = decision.confidence != null
-        ? ` (confidence: ${Math.round(decision.confidence * 100)}%)`
-        : ""
-      const header = approved
-        ? "Safe Auto-Approve: approved"
-        : "Safe Auto-Approve: asking"
-
-      const message = `${header}\n` +
-        `Command: ${redactCommand(input.args?.command ?? input.args?.[0] ?? "unknown")}\n` +
-        `Source: ${decision.source}${confidence}\n` +
-        `Reason: ${decision.reason}`
-
-      // Inject a visible chat message after the tool result (noReply prevents LLM trigger)
-      try {
-        await v2Client.session.prompt({
-          sessionID,
-          parts: [{ type: "text", text: message }],
-          noReply: true,
-        })
-      } catch {
-        // Silently ignore — UI feedback is best-effort
+        // Prepend so annotations stack in chronological order
+        output.parts.unshift({ type: "text", text: annotation } as any)
       }
+
+      // Clear the queue for this session
+      decisionQueue.delete(input.sessionID)
     },
   }
 }
