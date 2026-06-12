@@ -2,6 +2,8 @@
 
 An OpenCode plugin that hooks into `permission.asked` bus events to automatically approve low-risk bash commands while flagging dangerous operations for user confirmation.
 
+**Some decision are delegated to an LLM. Use this at your own risk.**
+
 ## Installation
 
 ```bash
