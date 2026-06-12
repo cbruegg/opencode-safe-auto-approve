@@ -565,7 +565,7 @@ export const SafeAutoApprovePlugin: Plugin = async ({ client, serverUrl, directo
       // Only handle bash/shell permissions
       if (props.permission !== "bash" && props.permission !== "shell") return
 
-      const command = props.patterns[0] || ""
+      const command = props.patterns.join("\n").trim()
       if (!command) return
 
       try {
