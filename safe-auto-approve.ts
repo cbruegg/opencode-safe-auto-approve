@@ -442,7 +442,9 @@ async function showDecisionToast(
 // ============================================================================
 
 function normalizeCommand(command: string): string {
-  return command.trim().replace(/\s+/g, " ")
+  // Collapse horizontal whitespace (spaces/tabs) but preserve newlines so
+  // multiline commands remain readable for the model classifier.
+  return command.trim().replace(/[ \t]+/g, " ")
 }
 
 async function decide(
